@@ -1,5 +1,5 @@
 # MessVerse backend
-API for MessVerse uploads (Cloudinary) + metadata storage (Postgres).
+API for MessVerse uploads (Cloudinary) + metadata storage (MongoDB).
 
 ## Routes
 - GET `/health`
@@ -14,17 +14,12 @@ If `MV_API_KEY` is set, POST routes require header: `X-MV-KEY: <MV_API_KEY>`.
 1. Copy `.env.example` to `.env` and fill values.
 2. Install deps:
    - `npm install`
-3. Generate Prisma client:
-   - `npm run prisma:generate`
-4. Run dev:
+3. Run dev:
    - `npm run dev`
 
 ## Render deployment
-- Create a **PostgreSQL** instance on Render and use its `DATABASE_URL`.
+- Create a MongoDB database (commonly MongoDB Atlas) and set `MONGODB_URI`.
 - Create a **Web Service** from this repo.
-- Set env vars: `DATABASE_URL`, `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`, optionally `MV_API_KEY`.
+- Set env vars: `MONGODB_URI`, `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`, optionally `MV_API_KEY`.
+- Build command: `npm install`
 - Start command: `npm start`
-
-Run migrations on deploy:
-- Add Render build command: `npm install && npx prisma generate`
-- Add Render start command: `npx prisma migrate deploy && npm start`

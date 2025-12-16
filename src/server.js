@@ -4,10 +4,10 @@ import cors from 'cors';
 import morgan from 'morgan';
 import multer from 'multer';
 import { v2 as cloudinary } from 'cloudinary';
-import { PrismaClient } from '@prisma/client';
+import { connectDb } from './db.js';
+import { MemberPortrait, Memory } from './models.js';
 
 const app = express();
-const prisma = new PrismaClient();
 
 const PORT = process.env.PORT || 10000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
@@ -58,7 +58,7 @@ function uploadBufferToCloudinary(buffer, options) {
 
 // --- Member portraits ---
 app.get('/api/member-portraits', async (req, res) => {
-  const rows = await prisma.memberPortrait.findMany();
+  const rows = await MemberPortrait.find({}).lean();
   const map = Object.fromEntries(rows.map(r => [r.memberId, r.url]));
   res.json({ portraits: map });
 });
@@ -79,11 +79,11 @@ app.post('/api/member-portraits', requireKey, upload.single('file'), async (req,
     ]
   });
 
-  const saved = await prisma.memberPortrait.upsert({
-    where: { memberId },
-    update: { url: result.secure_url, cloudinaryId: result.public_id },
-    create: { memberId, url: result.secure_url, cloudinaryId: result.public_id }
-  });
+  const saved = await MemberPortrait.findOneAndUpdate(
+    { memberId },
+    { $set: { url: result.secure_url, cloudinaryId: result.public_id } },
+    { new: true, upsert: true }
+  ).lean();
 
   res.json({ ok: true, portrait: saved });
 });
@@ -91,10 +91,7 @@ app.post('/api/member-portraits', requireKey, upload.single('file'), async (req,
 // --- Memories (gallery) ---
 app.get('/api/memories', async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 60), 200);
-  const rows = await prisma.memory.findMany({
-    orderBy: { createdAt: 'desc' },
-    take: limit
-  });
+  const rows = await Memory.find({}).sort({ createdAt: -1 }).limit(limit).lean();
   res.json({ memories: rows });
 });
 
@@ -114,14 +111,12 @@ app.post('/api/memories', requireKey, upload.single('file'), async (req, res) =>
     ]
   });
 
-  const saved = await prisma.memory.create({
-    data: {
-      url: result.secure_url,
-      cloudinaryId: result.public_id,
-      caption,
-      alt,
-      memberId
-    }
+  const saved = await Memory.create({
+    url: result.secure_url,
+    cloudinaryId: result.public_id,
+    caption,
+    alt,
+    memberId
   });
 
   res.json({ ok: true, memory: saved });
@@ -134,10 +129,17 @@ app.use((err, req, res, next) => {
 });
 
 process.on('SIGINT', async () => {
-  await prisma.$disconnect();
   process.exit(0);
 });
 
-app.listen(PORT, () => {
-  console.log(`mess_verse_backend listening on :${PORT}`);
-});
+// Start only after DB connect
+connectDb()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`mess_verse_backend listening on :${PORT}`);
+    });
+  })
+  .catch((e) => {
+    console.error('DB connection failed:', e?.message || e);
+    process.exit(1);
+  });
