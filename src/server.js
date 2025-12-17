@@ -9,6 +9,9 @@ import { MemberPortrait, Memory } from './models.js';
 
 const app = express();
 
+// Render/Proxies: make req.ip respect X-Forwarded-For
+app.set('trust proxy', 1);
+
 const PORT = process.env.PORT || 10000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 const MV_API_KEY = (process.env.MV_API_KEY || '').trim();
@@ -21,7 +24,15 @@ cloudinary.config({
 
 app.use(morgan('tiny'));
 app.use(express.json({ limit: '1mb' }));
-app.use(cors({ origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN.split(',').map(s => s.trim()) }));
+
+const corsOptions = {
+  origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN.split(',').map(s => s.trim()),
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'X-MV-KEY'],
+  maxAge: 86400
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 function requireKey(req, res, next) {
   if (!MV_API_KEY) return next();
@@ -29,6 +40,34 @@ function requireKey(req, res, next) {
   if (key && key === MV_API_KEY) return next();
   return res.status(401).json({ error: 'Unauthorized' });
 }
+
+// Very small in-memory rate limiter (good enough for a small private site)
+function rateLimit({ windowMs, max, keyPrefix }) {
+  const bucket = new Map();
+  return (req, res, next) => {
+    const ip = req.ip || 'unknown';
+    const key = `${keyPrefix}:${ip}`;
+    const now = Date.now();
+
+    const cur = bucket.get(key) || { count: 0, resetAt: now + windowMs };
+    if (now > cur.resetAt) {
+      cur.count = 0;
+      cur.resetAt = now + windowMs;
+    }
+
+    cur.count += 1;
+    bucket.set(key, cur);
+
+    if (cur.count > max) {
+      res.setHeader('Retry-After', Math.ceil((cur.resetAt - now) / 1000));
+      return res.status(429).json({ error: 'Too many requests' });
+    }
+
+    next();
+  };
+}
+
+const limitMutations = rateLimit({ windowMs: 60_000, max: 30, keyPrefix: 'mut' });
 
 app.get('/health', (req, res) => {
   res.json({ ok: true });
@@ -63,7 +102,7 @@ app.get('/api/member-portraits', async (req, res) => {
   res.json({ portraits: map });
 });
 
-app.post('/api/member-portraits', requireKey, upload.single('file'), async (req, res) => {
+app.post('/api/member-portraits', limitMutations, requireKey, upload.single('file'), async (req, res) => {
   const memberId = String(req.body.memberId || '').trim();
   if (!memberId) return res.status(400).json({ error: 'memberId is required' });
   if (!req.file?.buffer) return res.status(400).json({ error: 'file is required' });
@@ -95,7 +134,7 @@ app.get('/api/memories', async (req, res) => {
   res.json({ memories: rows });
 });
 
-app.post('/api/memories', requireKey, upload.single('file'), async (req, res) => {
+app.post('/api/memories', limitMutations, requireKey, upload.single('file'), async (req, res) => {
   const caption = (req.body.caption || '').toString().trim() || null;
   const alt = (req.body.alt || '').toString().trim() || caption || 'MessVerse memory';
   const memberId = (req.body.memberId || '').toString().trim() || null;
@@ -122,11 +161,18 @@ app.post('/api/memories', requireKey, upload.single('file'), async (req, res) =>
   res.json({ ok: true, memory: saved });
 });
 
-app.delete('/api/memories/:id', requireKey, async (req, res) => {
+app.delete('/api/memories/:id', limitMutations, requireKey, async (req, res) => {
   const id = String(req.params.id || '').trim();
   if (!id) return res.status(400).json({ error: 'id is required' });
 
-  const deleted = await Memory.findByIdAndDelete(id);
+  let deleted;
+  try {
+    deleted = await Memory.findByIdAndDelete(id);
+  } catch (e) {
+    // Invalid ObjectId or other cast error
+    return res.status(400).json({ error: 'Invalid id' });
+  }
+
   if (!deleted) return res.status(404).json({ error: 'Not found' });
 
   if (deleted.cloudinaryId) {
