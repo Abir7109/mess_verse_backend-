@@ -122,6 +122,24 @@ app.post('/api/memories', requireKey, upload.single('file'), async (req, res) =>
   res.json({ ok: true, memory: saved });
 });
 
+app.delete('/api/memories/:id', requireKey, async (req, res) => {
+  const id = String(req.params.id || '').trim();
+  if (!id) return res.status(400).json({ error: 'id is required' });
+
+  const deleted = await Memory.findByIdAndDelete(id);
+  if (!deleted) return res.status(404).json({ error: 'Not found' });
+
+  if (deleted.cloudinaryId) {
+    try {
+      await cloudinary.uploader.destroy(deleted.cloudinaryId, { resource_type: 'image' });
+    } catch {
+      // If Cloudinary delete fails, we still consider the DB delete successful.
+    }
+  }
+
+  res.json({ ok: true });
+});
+
 // Error handler
 app.use((err, req, res, next) => {
   console.error(err);
